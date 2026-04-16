@@ -10,11 +10,40 @@ export enum Method {
   typedDataSign = "typedDataSign",
 }
 
+/**
+ * A currency/asset in the user's Bexo wallet.
+ *
+ * **ID format**: `{chain}.{network}.{type}.{symbol}`
+ *   - Crypto native: `"polygon.mainnet.native.pol"` (chainId: "0x89")
+ *   - Crypto ERC20:  `"polygon.mainnet.erc20.usdc"` (chainId: "0x89")
+ *   - Fiat:          `"argentina.fiat.ars"`          (chainId: undefined)
+ *
+ * **Detecting currency type:**
+ *   - `!currency.chainId`           → fiat (ARS, etc.)
+ *   - `id.includes('.native.')`      → native token (ETH, POL, BNB, RBTC)
+ *   - otherwise                      → ERC20 token
+ *
+ * **Important:** `address` is the USER's wallet address, NOT a token contract address.
+ * To read ERC20 balances you need a separate mapping of chainId+symbol → contract address.
+ */
+export interface Currency {
+    /** Dot-separated identifier, e.g. "polygon.mainnet.erc20.usdc" */
+    id: string;
+    /** User's wallet address on this chain (NOT the token contract) */
+    address: string;
+    /** Hex chain ID, e.g. "0x89". Missing for fiat currencies. */
+    chainId?: string;
+    /** Token symbol, e.g. "USDC", "POL", "ARS" */
+    symbol?: string;
+    /** URL to the currency icon */
+    image?: string;
+}
+
 export interface Client {
     _id: string;
     alias: string;
     image: string;
-    currencies: Array<{ id: string; address: string }>;
+    currencies: Currency[];
 }
 
 export interface RequestParams {

@@ -1,83 +1,95 @@
-# XOConnect
+# xo-connect
 
-`XOConnect` is an implementation of `ethers.providers.ExternalProvider` that allows dApps to interact with compatible wallets through **XOConnect protocol**, using WebView, iframe, or embedded contexts.
+EIP-1193 wallet provider for [Bexo](https://bfrens.io) — connect your dApp to Bexo Wallet via WebView/iframe.
 
-It is ideal for mobile or web apps that need to sign messages, send transactions, or interact with smart contracts using a non-standard wallet connection method.
-
----
-
-## ✨ Features
-
-- Compatible with `ethers.js` (`ethers.providers.Web3Provider`)
-- Implements common JSON-RPC methods such as:
-  - `eth_requestAccounts`
-  - `eth_accounts`
-  - `personal_sign`
-  - `eth_sendTransaction`
-  - `eth_signTypedData` / `eth_signTypedData_v4`
-  - `eth_chainId`, `eth_blockNumber`, `eth_gasPrice`, etc.
-- Provides access to the authenticated client and their available currencies
-
----
-
-## 📦 Installation
+## Install
 
 ```bash
-yarn add xo-connect
-# or
 npm install xo-connect
 ```
 
----
+## Quick Start (ethers.js v6)
 
-## 🚀 Basic Usage
+```typescript
+import { XOConnect, XOConnectProvider } from "xo-connect"
+import { BrowserProvider, Contract, formatUnits } from "ethers"
 
-```ts
-import { XOConnectProvider } from "xo-connect";
-import { ethers } from "ethers";
+// 1. Create EIP-1193 provider with RPCs
+const xo = new XOConnectProvider({
+  rpcs: { "0x89": "https://polygon-bor-rpc.publicnode.com" },
+  defaultChainId: "0x89",
+})
 
-const provider = new ethers.providers.Web3Provider(new XOConnectProvider(), "any");
+// 2. Connect to wallet
+const { client } = await XOConnect.connect()
+console.log(client.alias)       // "juanipodesta"
+console.log(client.currencies)  // [{ id, address, chainId, symbol, image }, ...]
 
-await provider.send("eth_requestAccounts", []);
-const signer = provider.getSigner();
+// 3. Read USDC balance via ethers
+const ethersProvider = new BrowserProvider(xo)
+const usdc = new Contract("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+  ["function balanceOf(address) view returns (uint256)"],
+  ethersProvider)
+const balance = await usdc.balanceOf(client.currencies[0].address)
+console.log("USDC:", formatUnits(balance, 6))
 
-const address = await signer.getAddress();
-const signature = await signer.signMessage("Hello from XOConnect");
-
-const tx = await signer.sendTransaction({
-  to: "0x123...",
-  value: ethers.utils.parseEther("0.01"),
-});
+// 4. Transfer USDC
+const signer = await ethersProvider.getSigner(0)
+const usdcSigner = new Contract("0x3c499c...", [
+  "function transfer(address,uint256) returns (bool)"
+], signer)
+await usdcSigner.transfer("0xRECIPIENT", 10_000_000n) // 10 USDC
 ```
 
----
+## Key Concepts
 
-## 👤 Accessing the Client and Currencies
+| Concept | Description |
+|---------|-------------|
+| `XOConnect` | Singleton for wallet connection and signing requests |
+| `XOConnectProvider` | EIP-1193 provider — wrap with `ethers.BrowserProvider` |
+| `currency.address` | **User's wallet address** (NOT the token contract!) |
+| `currency.chainId` | Hex chain ID — **missing** for fiat currencies (ARS) |
+| Fiat payments | Use `XOConnect.sendRequest()` directly, not EIP-1193 |
 
-XOConnect also allows you to access the current authenticated client and their supported currencies:
+## Currency Types
 
-```ts
-import { XOConnect } from "xo-connect";
-
-const client = await XOConnect.getClient();
-console.log(client.alias); // e.g. "katemiller"
-console.log(client.currencies); // Array of currencies with id, symbol, image, address, etc.
+```typescript
+// Detect type from the currency object:
+if (!currency.chainId)                    → fiat (ARS, etc.)
+if (currency.id.includes('.native.'))     → native token (ETH, POL, BNB)
+otherwise                                 → ERC20 token (USDC, USDT, DAI)
 ```
 
-Each currency contains:
+## Documentation
 
-```ts
-{
-  id: "polygon.mainnet.native.matic",
-  symbol: "MATIC",
-  address: "0x...",
-  image: "https://...",
-  chainId: "0x89"
-}
+- **[Integration Guide](docs/integration.md)** — Complete reference with:
+  - Currency ID format table
+  - Known token contracts per chain (Polygon, Ethereum, Arbitrum, Base)
+  - Balance reading patterns
+  - Transaction signing for crypto and fiat
+  - React/Next.js context + checkout example
+  - Troubleshooting guide
+  - **Copy-paste prompt for AI assistants**
+
+- **[Examples](docs/examples/)** — Production-ready code:
+  - [Next.js Checkout Component](docs/examples/next-checkout.tsx)
+
+- **[API Reference](XO-CONNECT.md)** — Full method reference
+
+## AI Integration
+
+Give any AI assistant this URL and it can integrate xo-connect:
+
+```
+https://github.com/latamxo/xo-connect/blob/main/docs/integration.md
 ```
 
----
+Or copy the prompt from the [Copy-Paste Prompt section](docs/integration.md#copy-paste-prompt-for-ai) in the integration guide.
 
-## 📄 License
+## Reference Implementation
+
+See [sami](https://github.com/fabian416/sami/tree/main/packages/frontend/src/providers) for a complete working integration using xo-connect + ethers.js + React.
+
+## License
 
 MIT

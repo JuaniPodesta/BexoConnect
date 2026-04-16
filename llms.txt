@@ -1,0 +1,64 @@
+# xo-connect
+
+> EIP-1193 wallet provider for Bexo — connects dApps to Bexo Wallet via WebView/iframe.
+
+## What this is
+
+xo-connect lets web apps running inside the Bexo Wallet (mobile WebView) connect to the user's wallet, read balances, sign messages, and send transactions. It exposes a standard EIP-1193 provider compatible with ethers.js, viem, and wagmi.
+
+## Installation
+
+```bash
+npm install xo-connect
+```
+
+## 30-second integration (ethers.js v6)
+
+```ts
+import { XOConnect, XOConnectProvider } from "xo-connect"
+import { BrowserProvider, Contract, formatUnits } from "ethers"
+
+// 1. Create the EIP-1193 provider with RPCs for balance reads
+const xo = new XOConnectProvider({
+  rpcs: { "0x89": "https://polygon-bor-rpc.publicnode.com" },
+  defaultChainId: "0x89",
+})
+
+// 2. Connect to Bexo and get the user
+const { client } = await XOConnect.connect()
+// client.alias = "juanipodesta"
+// client.currencies = [{ id: "polygon.mainnet.erc20.usdc", address: "0x...", chainId: "0x89" }, ...]
+
+// 3. Wrap in ethers for contract calls
+const ethersProvider = new BrowserProvider(xo)
+const signer = await ethersProvider.getSigner(0)
+
+// 4. Read USDC balance
+const usdc = new Contract("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+  ["function balanceOf(address) view returns (uint256)", "function transfer(address,uint256) returns (bool)"],
+  ethersProvider)
+const balance = await usdc.balanceOf(client.currencies[0].address)
+
+// 5. Transfer USDC
+const usdcWithSigner = usdc.connect(signer)
+const tx = await usdcWithSigner.transfer("0xRECIPIENT", 10_000_000n) // 10 USDC (6 decimals)
+await tx.wait()
+```
+
+## Key concepts
+
+- **XOConnect** — singleton for wallet connection (connect/disconnect/sendRequest)
+- **XOConnectProvider** — EIP-1193 provider (wrap with ethers.BrowserProvider for contract calls)
+- **Currency types**: detect via `!currency.chainId` (fiat) / `id.includes('.native.')` (native) / else (ERC20)
+- **`currency.address`** = user's wallet address, NOT the token contract address
+- **Fiat payments** (ARS): use `XOConnect.sendRequest({ method: "transactionSign", currency: arsId, ... })`
+
+## Detailed docs
+
+See `docs/integration.md` for the full guide with:
+- Currency ID format table
+- Known token contract addresses per chain
+- Balance reading patterns
+- Transaction signing for crypto and fiat
+- Complete Next.js/React integration example
+- Troubleshooting guide

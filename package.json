@@ -6,7 +6,9 @@
     "module": "dist/index.js",
     "types": "dist/index.d.ts",
     "files": [
-        "dist"
+        "dist",
+        "docs",
+        "llms.txt"
     ],
     "scripts": {
         "start": "webpack serve --config webpack.config.js --open",
