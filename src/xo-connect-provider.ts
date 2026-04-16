@@ -34,15 +34,37 @@ export class XOConnectProvider {
       }
     }
 
-    if (opts?.debug) {
-      this.debugPanel = new DebugPanel();
+    // Debug panel is ON by default so integrators see errors immediately.
+    // Pass `debug: false` explicitly to disable it for production builds.
+    // See docs/integration.md → "Disabling the debug panel" for details.
+    const debugEnabled = opts?.debug !== false;
+    if (debugEnabled) {
+      this.debugPanel = new DebugPanel({
+        rpcMap: this.rpcMap,
+        currentChainId: this.chainIdHex,
+        onRpcChange: (chainId, url) => this.setRpc(chainId, url),
+      });
       this.debugPanel.info('init', {
         chainId: this.chainIdHex,
-        rpcs: this.rpcMap ? Object.keys(this.rpcMap) : []
+        rpcs: this.rpcMap ? Object.keys(this.rpcMap) : [],
       });
-      // Compartir el panel con el core XOConnect
+      // Share the panel with the core XOConnect singleton
       XOConnect.debugPanel = this.debugPanel;
     }
+  }
+
+  /**
+   * Update the RPC URL for a given chain at runtime.
+   * Useful for debugging against different providers without rebuilding.
+   */
+  setRpc(chainId: string, url: string): void {
+    const id = chainId.toLowerCase();
+    if (!this.rpcMap) this.rpcMap = {};
+    this.rpcMap[id] = url;
+    if (id === this.chainIdHex) {
+      this.rpc = new JsonRpcClient(url);
+    }
+    this.debugPanel?.info('rpc-updated', { chainId: id, url });
   }
 
   private requireRpc(method: string): JsonRpcClient {
@@ -148,14 +170,21 @@ export class XOConnectProvider {
 
     const [from] = await this.getAccounts();
 
-    // Convertir value a string decimal para la wallet
+    // Convertir value a string decimal para la wallet. BigInt throws on
+    // invalid input (non-hex strings, Symbols, objects) — guard against it.
     let valueForWallet: string = "0";
-    if (typeof tx.value === "object" && tx.value?.hex) {
-      valueForWallet = BigInt(tx.value.hex).toString();
-    } else if (typeof tx.value === "string" && tx.value.startsWith("0x")) {
-      valueForWallet = BigInt(tx.value).toString();
-    } else if (tx.value) {
-      valueForWallet = String(tx.value);
+    try {
+      if (typeof tx.value === "object" && tx.value?.hex) {
+        valueForWallet = BigInt(tx.value.hex).toString();
+      } else if (typeof tx.value === "string" && tx.value.startsWith("0x")) {
+        valueForWallet = BigInt(tx.value).toString();
+      } else if (tx.value) {
+        valueForWallet = String(tx.value);
+      }
+    } catch (err: any) {
+      throw new Error(
+        `signTransaction: invalid value ${JSON.stringify(tx.value)}: ${err?.message || err}`
+      );
     }
 
     // Asegurar que data tenga formato hex o sea undefined
@@ -189,11 +218,8 @@ export class XOConnectProvider {
             }
 
             const hash = d.result;
-            if (
-              typeof hash === "string" &&
-              hash.startsWith("0x") &&
-              hash.length === 66
-            ) {
+            // Strict: exactly 32 bytes hex after 0x (66 total), only [0-9a-f]
+            if (typeof hash === "string" && /^0x[0-9a-fA-F]{64}$/.test(hash)) {
               return resolve(hash);
             }
 
@@ -310,6 +336,9 @@ export class XOConnectProvider {
         } else {
           this.rpc = null;
         }
+
+        // Keep the debug panel in sync (highlights the active chain)
+        this.debugPanel?.setCurrentChain?.(next);
 
         this.emit("chainChanged", next);
         // Optional: also emit accountsChanged if your account is chain-specific

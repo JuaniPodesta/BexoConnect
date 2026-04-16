@@ -28,8 +28,8 @@
     "author": "Iwakawa",
     "license": "MIT",
     "dependencies": {
-        "ethers": "^5.7.2",
-        "uuid": "^11.0.5"
+        "ethers": "5.7.2",
+        "uuid": "11.0.5"
     },
     "devDependencies": {
         "@babel/core": "^7.26.0",
@@ -38,7 +38,7 @@
         "@types/uuid": "^10.0.0",
         "babel-loader": "^9.2.1",
         "ts-loader": "^9.5.1",
-        "typescript": "^5.7.3",
+        "typescript": "^5.9.3",
         "webpack": "^5.97.1",
         "webpack-cli": "^6.0.1"
     }

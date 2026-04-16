@@ -7,14 +7,27 @@ export interface LogEntry {
   data?: any;
 }
 
+export interface DebugPanelOptions {
+  rpcMap?: Record<string, string> | null;
+  currentChainId?: string;
+  onRpcChange?: (chainId: string, url: string) => void;
+}
+
 export class DebugPanel {
   private container: HTMLElement | null = null;
   private logList: HTMLElement | null = null;
   private isCollapsed = false;
   private logs: LogEntry[] = [];
   private errorCount = 0;
+  private rpcMap: Record<string, string>;
+  private currentChainId: string;
+  private onRpcChange?: (chainId: string, url: string) => void;
 
-  constructor() {
+  constructor(opts: DebugPanelOptions = {}) {
+    this.rpcMap = { ...(opts.rpcMap || {}) };
+    this.currentChainId = opts.currentChainId || '0x1';
+    this.onRpcChange = opts.onRpcChange;
+
     if (typeof window !== 'undefined') {
       // Esperar a que el DOM esté listo
       if (document.readyState === 'loading') {
@@ -78,14 +91,16 @@ export class DebugPanel {
   }
 
   private captureGlobalErrors() {
-    window.onerror = (message, source, lineno, colno, error) => {
-      this.log('error', 'JS Error', `${message} (${source}:${lineno})`);
-      return false;
-    };
+    // Use addEventListener (not window.onerror assignment) so we don't clobber
+    // existing error handlers set by the host application.
+    window.addEventListener('error', (ev: ErrorEvent) => {
+      this.log('error', 'JS Error', `${ev.message} (${ev.filename}:${ev.lineno})`);
+    });
 
-    window.onunhandledrejection = (event) => {
-      this.log('error', 'Promise Error', event.reason?.message || event.reason);
-    };
+    window.addEventListener('unhandledrejection', (ev: PromiseRejectionEvent) => {
+      const reason: any = ev.reason;
+      this.log('error', 'Promise Error', reason?.message || reason);
+    });
   }
 
   private captureConsoleLogs() {
@@ -93,18 +108,35 @@ export class DebugPanel {
     const originalError = console.error;
     const originalWarn = console.warn;
 
-    console.log = (...args) => {
-      this.log('info', 'console.log', args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' '));
+    // Safe stringify — never throws (circular refs etc.), so the original
+    // console method is always called even if our panel logging fails.
+    const safeStringify = (a: any): string => {
+      if (typeof a !== 'object' || a === null) return String(a);
+      try {
+        return JSON.stringify(a);
+      } catch {
+        return '[unserializable]';
+      }
+    };
+
+    console.log = (...args: any[]) => {
+      try {
+        this.log('info', 'console.log', args.map(safeStringify).join(' '));
+      } catch { /* never swallow the real console call */ }
       originalLog.apply(console, args);
     };
 
-    console.error = (...args) => {
-      this.log('error', 'console.error', args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' '));
+    console.error = (...args: any[]) => {
+      try {
+        this.log('error', 'console.error', args.map(safeStringify).join(' '));
+      } catch { /* never swallow the real console call */ }
       originalError.apply(console, args);
     };
 
-    console.warn = (...args) => {
-      this.log('info', 'console.warn', args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' '));
+    console.warn = (...args: any[]) => {
+      try {
+        this.log('info', 'console.warn', args.map(safeStringify).join(' '));
+      } catch { /* never swallow the real console call */ }
       originalWarn.apply(console, args);
     };
   }
@@ -336,10 +368,20 @@ export class DebugPanel {
         }
       </style>
       <div id="xo-debug-header">
-        <div id="xo-debug-title">XO Debugger</div>
+        <div id="xo-debug-title">BexoConnect Debugger</div>
         <div id="xo-debug-actions">
+          <button class="xo-debug-btn" id="xo-debug-rpc" title="Editar RPCs">⚙</button>
           <button class="xo-debug-btn" id="xo-debug-toggle" title="Minimizar">−</button>
           <span id="xo-debug-badge">0</span>
+        </div>
+      </div>
+      <div id="xo-debug-rpc-editor" style="display:none;padding:10px 12px;background:#151515;border-bottom:1px solid #333;">
+        <div style="font-size:11px;color:#999;margin-bottom:6px;">RPC endpoints (editable — changes apply instantly)</div>
+        <div id="xo-debug-rpc-list"></div>
+        <div style="display:flex;gap:6px;margin-top:6px;">
+          <input id="xo-debug-rpc-chain" placeholder="0x89" style="flex:0 0 70px;background:#222;border:1px solid #333;color:#fff;padding:4px 6px;border-radius:4px;font-size:11px;font-family:inherit;" />
+          <input id="xo-debug-rpc-url" placeholder="https://rpc-url..." style="flex:1;background:#222;border:1px solid #333;color:#fff;padding:4px 6px;border-radius:4px;font-size:11px;font-family:inherit;" />
+          <button class="xo-debug-btn" id="xo-debug-rpc-add" style="padding:4px 10px;font-size:11px;">Set</button>
         </div>
       </div>
       <div id="xo-debug-logs">
@@ -357,6 +399,67 @@ export class DebugPanel {
     });
 
     this.container.querySelector('#xo-debug-toggle')?.addEventListener('click', () => this.toggle());
+    this.container.querySelector('#xo-debug-rpc')?.addEventListener('click', () => this.toggleRpcEditor());
+    this.container.querySelector('#xo-debug-rpc-add')?.addEventListener('click', () => this.handleRpcAdd());
+
+    this.renderRpcList();
+  }
+
+  private toggleRpcEditor() {
+    const editor = this.container?.querySelector('#xo-debug-rpc-editor') as HTMLElement | null;
+    if (!editor) return;
+    editor.style.display = editor.style.display === 'none' ? 'block' : 'none';
+  }
+
+  private renderRpcList() {
+    const list = this.container?.querySelector('#xo-debug-rpc-list') as HTMLElement | null;
+    if (!list) return;
+    list.innerHTML = '';
+    const entries = Object.entries(this.rpcMap);
+    if (entries.length === 0) {
+      list.innerHTML = '<div style="color:#666;font-size:11px;">No RPCs configured</div>';
+      return;
+    }
+    for (const [chainId, url] of entries) {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;align-items:center;';
+      row.innerHTML = `
+        <span style="flex:0 0 70px;font-size:11px;color:${chainId === this.currentChainId ? '#fff' : '#888'};font-weight:${chainId === this.currentChainId ? '600' : '400'};">${chainId}</span>
+        <input data-chain="${chainId}" value="${url}" style="flex:1;background:#222;border:1px solid #333;color:#fff;padding:4px 6px;border-radius:4px;font-size:11px;font-family:inherit;" />
+      `;
+      const input = row.querySelector('input') as HTMLInputElement;
+      input?.addEventListener('change', () => {
+        const newUrl = input.value.trim();
+        if (newUrl) {
+          this.rpcMap[chainId] = newUrl;
+          this.onRpcChange?.(chainId, newUrl);
+        }
+      });
+      list.appendChild(row);
+    }
+  }
+
+  private handleRpcAdd() {
+    const chainInput = this.container?.querySelector('#xo-debug-rpc-chain') as HTMLInputElement | null;
+    const urlInput = this.container?.querySelector('#xo-debug-rpc-url') as HTMLInputElement | null;
+    if (!chainInput || !urlInput) return;
+    const chainId = chainInput.value.trim().toLowerCase();
+    const url = urlInput.value.trim();
+    if (!chainId || !url) return;
+    if (!/^0x[0-9a-f]+$/i.test(chainId)) {
+      this.log('error', 'rpc-add', `Invalid chainId: ${chainId} (must be hex like 0x89)`);
+      return;
+    }
+    this.rpcMap[chainId] = url;
+    this.onRpcChange?.(chainId, url);
+    chainInput.value = '';
+    urlInput.value = '';
+    this.renderRpcList();
+  }
+
+  setCurrentChain(chainId: string) {
+    this.currentChainId = chainId.toLowerCase();
+    this.renderRpcList();
   }
 
   private toggle() {
@@ -423,18 +526,41 @@ export class DebugPanel {
     el.className = 'xo-log-entry';
 
     const dataStr = this.formatData(data);
-    const dataHtml = dataStr ? `<div class="xo-log-data" title="Click para expandir">${dataStr}</div>` : '';
-    const copyBtn = `<button class="xo-log-copy">Copy</button>`;
 
-    el.innerHTML = `
-      <span class="xo-log-time">${this.formatTime(entry.timestamp)}</span>
-      <span class="xo-log-icon ${type}">${this.getIcon(type)}</span>
-      <div class="xo-log-content">
-        <span class="xo-log-method">${method}</span>
-        ${dataHtml}
-      </div>
-      ${copyBtn}
-    `;
+    // Build the row using textContent / createElement to avoid HTML injection
+    // from attacker-controlled `method` or `data` values (XSS hardening).
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'xo-log-time';
+    timeSpan.textContent = this.formatTime(entry.timestamp);
+
+    const iconSpan = document.createElement('span');
+    iconSpan.className = `xo-log-icon ${type}`;
+    iconSpan.textContent = this.getIcon(type);
+
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'xo-log-content';
+
+    const methodSpan = document.createElement('span');
+    methodSpan.className = 'xo-log-method';
+    methodSpan.textContent = method;
+    contentDiv.appendChild(methodSpan);
+
+    if (dataStr) {
+      const dataDiv = document.createElement('div');
+      dataDiv.className = 'xo-log-data';
+      dataDiv.title = 'Click para expandir';
+      dataDiv.textContent = dataStr;
+      contentDiv.appendChild(dataDiv);
+    }
+
+    const copyBtnEl = document.createElement('button');
+    copyBtnEl.className = 'xo-log-copy';
+    copyBtnEl.textContent = 'Copy';
+
+    el.appendChild(timeSpan);
+    el.appendChild(iconSpan);
+    el.appendChild(contentDiv);
+    el.appendChild(copyBtnEl);
 
     // Copy button (compatible con móvil)
     const copyEl = el.querySelector('.xo-log-copy');

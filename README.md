@@ -1,4 +1,6 @@
-# xo-connect
+# BexoConnect
+
+> npm package: `xo-connect`
 
 EIP-1193 wallet provider for [Bexo](https://bfrens.io) — connect your dApp to Bexo Wallet via WebView/iframe.
 

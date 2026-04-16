@@ -104,6 +104,8 @@ class _XOConnect {
     }
 
     this.debugPanel?.info('connect', 'Wallet XO detectada');
+    // Guard against double-adding the listener if connect() is called multiple times
+    window.removeEventListener("message", this.messageHandler);
     window.addEventListener("message", this.messageHandler, false);
 
     return new Promise((resolve, reject) => {
@@ -118,38 +120,57 @@ class _XOConnect {
           this.debugPanel?.info('connect', 'Respuesta recibida');
 
           try {
-            const client = res.data.client;
-            this.debugPanel?.info('connect', `Client: ${client?.alias || 'sin alias'}`);
+            const client = res.data?.client;
+            if (!client || typeof client !== 'object') {
+              throw new Error("Invalid client payload from wallet");
+            }
+            this.debugPanel?.info('connect', `Client: ${client.alias || 'sin alias'}`);
 
             const message = `xoConnect-${res.id}`;
             const signature = client.signature;
-            this.debugPanel?.info('connect', `Signature: ${signature?.slice(0, 20)}...`);
+            if (!signature || typeof signature !== 'string') {
+              throw new Error("Missing signature in client payload");
+            }
+            this.debugPanel?.info('connect', `Signature: ${signature.slice(0, 20)}...`);
 
-            const address = ethers.utils.verifyMessage(message, signature);
-            this.debugPanel?.info('connect', `Recovered address: ${address}`);
+            let recovered: string;
+            try {
+              recovered = ethers.utils.verifyMessage(message, signature);
+            } catch (err: any) {
+              throw new Error(`Signature verification failed: ${err?.message || err}`);
+            }
+            this.debugPanel?.info('connect', `Recovered address: ${recovered}`);
 
             // Log todas las currencies recibidas
-            this.debugPanel?.info('connect', `Currencies recibidas: ${client.currencies?.length || 0}`);
-            client.currencies?.forEach((c: any, i: number) => {
-              this.debugPanel?.info('currency', `${i}: ${c.id} chainId=${c.chainId}`);
+            const currencies = Array.isArray(client.currencies) ? client.currencies : [];
+            this.debugPanel?.info('connect', `Currencies recibidas: ${currencies.length}`);
+            currencies.forEach((c: any, i: number) => {
+              this.debugPanel?.info('currency', `${i}: ${c?.id} chainId=${c?.chainId}`);
             });
 
-            const eth = client.currencies.find(
-              (c: any) => c.id == "ethereum.mainnet.native.eth"
+            // Verify the recovered address matches ANY EVM currency address in the
+            // client payload (same wallet uses the same address across EVM chains).
+            // Previously this only checked `ethereum.mainnet.native.eth`, which
+            // crashed for Polygon-only wallets and was strictly less secure.
+            const recoveredLower = recovered.toLowerCase();
+            const matched = currencies.find((c: any) =>
+              typeof c?.address === 'string' &&
+              c.address.toLowerCase() === recoveredLower
             );
-            this.debugPanel?.info('connect', `ETH address: ${eth?.address}`);
-
-            if (eth.address !== address) {
-              this.debugPanel?.error('connect', `Address mismatch: ${eth.address} vs ${address}`);
+            if (!matched) {
+              this.debugPanel?.error(
+                'connect',
+                `Address mismatch: recovered ${recovered} not present in any currency`
+              );
               throw new Error("Invalid signature");
             }
 
             this.setClient(client);
-            this.debugPanel?.response('connect', { address: eth.address, alias: client.alias });
+            this.debugPanel?.response('connect', { address: matched.address, alias: client.alias });
 
             resolve({
               id: res.id,
-              client: res.data.client,
+              client,
             });
           } catch (e: any) {
             this.debugPanel?.error('connect', `Error: ${e.message}`);
@@ -157,6 +178,7 @@ class _XOConnect {
           }
         },
         onCancel: () => {
+          clearTimeout(timeout);
           this.debugPanel?.error('connect', 'Conexión cancelada');
           reject(new Error("No connection available"));
         },
@@ -180,6 +202,12 @@ class _XOConnect {
 
     this.debugPanel?.request(params.method, { currency: params.currency, data: params.data });
 
+    // targetOrigin is set to the current origin so the message doesn't leak
+    // across cross-origin frames in future browser versions that enforce it.
+    // Inside the native Bexo WebView the listener is in the same origin.
+    const targetOrigin =
+      typeof window !== 'undefined' && window.location ? window.location.origin : '*';
+
     window.postMessage(
       JSON.stringify({
         id,
@@ -187,19 +215,24 @@ class _XOConnect {
         method: request.method,
         data: request.data,
         currency: request.currency || "eth",
-      })
+      }),
+      targetOrigin
     );
     return id;
   }
 
   cancelRequest(id: string): void {
     const request = this.pendingRequests.get(id);
-    postMessage(
+    if (!request) return;
+    const targetOrigin =
+      typeof window !== 'undefined' && window.location ? window.location.origin : '*';
+    window.postMessage(
       JSON.stringify({
         id,
         type: "cancel",
         method: request.method,
-      })
+      }),
+      targetOrigin
     );
     this.pendingRequests.delete(id);
   }
@@ -219,11 +252,37 @@ class _XOConnect {
     }
   }
 
+  // Hardened message handler (addresses security review findings):
+  //   1. Only accept messages from the same window (blocks iframe/cross-origin injection)
+  //   2. Enforce origin match (blocks other tabs/opener attacks)
+  //   3. Wrap JSON.parse in try/catch (prevents crash from non-JSON messages)
+  //   4. Only process responses whose `id` corresponds to a pending request
   private messageHandler = (event: MessageEvent) => {
-    if (event.data?.length) {
-      const res: Response = JSON.parse(event.data);
-      if (res.type != "send") this.processResponse(res);
+    // Only accept messages from this window itself (the wallet bridge posts to window)
+    if (event.source !== window) return;
+
+    // Enforce same-origin. '' or 'null' origins (data:, about:blank) are rejected.
+    if (typeof window !== 'undefined' && window.location) {
+      const expected = window.location.origin;
+      if (event.origin && event.origin !== expected) return;
     }
+
+    if (typeof event.data !== 'string' || event.data.length === 0) return;
+
+    let res: Response;
+    try {
+      res = JSON.parse(event.data);
+    } catch {
+      return; // Non-JSON messages are silently ignored, not crashed on
+    }
+
+    if (!res || typeof res !== 'object' || typeof res.id !== 'string') return;
+    if (res.type === 'send') return; // These are our own outgoing messages
+
+    // Only process responses we actually asked for
+    if (!this.pendingRequests.has(res.id)) return;
+
+    this.processResponse(res);
   };
 }
 

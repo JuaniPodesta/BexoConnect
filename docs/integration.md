@@ -1,5 +1,7 @@
-# xo-connect Integration Guide
+# BexoConnect Integration Guide
 
+> npm package: `xo-connect`
+>
 > Complete guide for integrating Bexo Wallet into any web application.
 > This document is designed to be readable by both humans and AI assistants.
 
@@ -390,6 +392,60 @@ export function useBexo() {
 See `docs/examples/next-checkout.tsx` for a complete production-ready checkout component.
 
 ---
+
+## Debug Panel
+
+BexoConnect ships with a **built-in debug panel that is ON by default**. It appears in the bottom-right corner of the page and shows:
+
+- Every EIP-1193 request/response (`eth_getBalance`, `eth_call`, `eth_sendTransaction`, etc.)
+- `console.log` / `console.error` / `console.warn` captured globally
+- Uncaught JS errors and unhandled promise rejections
+- Detection status for `window.XOConnect` and `window.ReactNativeWebView`
+- An **RPC editor** (click the ⚙ icon) — change the RPC URL for any chain at runtime without rebuilding
+
+This makes debugging inside Bexo's mobile WebView dramatically easier — you don't need remote DevTools to see what's going wrong.
+
+### Changing RPC URLs at runtime
+
+Click the ⚙ button in the panel header. You can:
+- Edit the URL of any already-configured chain (change applies instantly)
+- Add a new chain by entering `chainId` (hex, e.g. `0x89`) and an RPC URL
+
+You can also update RPCs programmatically:
+
+```ts
+xoProvider.setRpc("0x89", "https://my-custom-polygon-rpc.example.com")
+```
+
+### ⚠️ Disabling the debug panel in production
+
+**The debug panel is intentionally ON by default during integration.** Once you've finished testing your integration and everything works correctly, you **should** disable it for production builds. Passing `debug: false` removes the UI, stops capturing console logs, and avoids console monkey-patching in end-user traffic.
+
+```ts
+// Development / debugging
+const xo = new XOConnectProvider({
+  rpcs: { "0x89": "https://polygon-bor-rpc.publicnode.com" },
+  defaultChainId: "0x89",
+  // debug: true is the default — no need to specify
+})
+
+// Production
+const xo = new XOConnectProvider({
+  rpcs: { "0x89": "https://polygon-bor-rpc.publicnode.com" },
+  defaultChainId: "0x89",
+  debug: false, // ← disable panel and console/error capturing for end users
+})
+```
+
+A clean pattern is to tie it to your environment:
+
+```ts
+const xo = new XOConnectProvider({
+  rpcs: { "0x89": process.env.NEXT_PUBLIC_POLYGON_RPC! },
+  defaultChainId: "0x89",
+  debug: process.env.NODE_ENV !== "production",
+})
+```
 
 ## Troubleshooting
 
